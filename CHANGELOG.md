@@ -180,4 +180,50 @@ Die Navigationsleiste enthält jetzt einen zusätzlichen Punkt:
 
 ---
 
+## v1.1 — Multi-Screen-Navigation
+
+**Ordner:** `firmware 1.1`  
+**Datum:** 2026-07-18
+
+### Neu: Mehrere E-Paper-Screens per BTN_REC durchschalten
+
+Bisher zeigte das Display immer genau einen Screen mit allen Gruppen und allen Sensoren. Ab diesem Update gibt es mehrere Screens, die mit **BTN_REC** (kurzer Druck) durchgeschaltet werden:
+
+| Screen | Inhalt |
+|---|---|
+| 0 — Übersicht | Nur Fenster- und Türen-Gruppen; je Gruppe Zähler (offen/gesamt); darunter **nur die offenen** Sensoren |
+| 1..N — Detailscreens | Je ein Screen pro aktiver Gruppe mit **allen** Sensoren (offen + geschlossen) |
+
+Sind keine Detailscreens vorhanden (z. B. noch keine Sensoren geladen), löst BTN_REC weiterhin einen manuellen Refresh aus.
+
+**Warum so?**  
+Auf dem 200×200px-Display ist der Platz begrenzt. Die Übersicht soll auf einen Blick zeigen, ob irgendwo etwas offen ist und was, ohne gescrollt werden zu müssen. Die Detailscreens bieten dann den vollständigen Status je Gruppe.
+
+### Layout-Änderungen
+
+- **Übersicht (Screen 0):** Separator nach unten verschoben (y=170 statt 163) → mehr Platz für Sensorliste; IP-Adresse bei y=153; Status bei y=187.
+- **Detailscreens:** Separator bleibt bei y=163 (Standard-Layout).
+
+### Technische Details
+
+- `showDoorWindowScreen()` in `ui.cpp` wurde aufgeteilt in `showOverviewScreen()` und `showGroupScreen(int groupIdx, ...)`.
+- Gemeinsame Hilfsfunktionen `drawHeader()`, `drawStatusBar()`, `drawGroupHeader()`, `drawSensorRow()` reduzieren Code-Duplizierung.
+- Neue Funktionen in `tuer_display.ino`: `countDetailScreens()`, `groupForScreen(int)`, `showCurrentScreen()`.
+- `reInitPartialAndShow()` und alle anderen Aufrufstellen rufen jetzt `showCurrentScreen()` auf.
+- `currentScreen` wird in `loop()` bei BTN_REC-Druck per Modulo durch alle verfügbaren Screens rotiert.
+
+### Bugfix: Display-Überlappung bei Full-Refresh-Screens
+
+`refreshFull()` rief nur `EPD_Display()` auf ohne vorheriges `EPD_Init()`. Wenn das Display im Partial-Modus war (z. B. nach dem Boot-Init), wurde der alte Frame-Buffer nicht vollständig überschrieben — der WiFiManager-Screen zeigte unlesbaren, überlagerten Text.
+
+**Fix:** `refreshFull()` ruft jetzt `EPD_Init()` + `EPD_Display()` auf, sodass immer aus einem definierten Vollbild-Zustand heraus gerendert wird.
+
+### Bugfix: WLAN-Credentials nach Neustart nicht erkannt
+
+Der feste `delay(500)` nach `WiFi.begin()` reichte auf manchen Geräten nicht aus, um die SSID aus dem NVS zu laden. Folge: `WiFi.SSID()` lieferte leer → ESP startete jedes Mal den WiFiManager.
+
+**Fix:** Statt fixem Delay wartet der Code nun aktiv in einer Schleife (max. 3 Sekunden) bis `WiFi.SSID().length() > 0` — oder fährt dann erst mit dem WiFiManager fort.
+
+---
+
 *Weitere Einträge folgen mit jeder Firmware-Erweiterung.*

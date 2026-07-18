@@ -91,6 +91,7 @@ static unsigned long lastPollMillis  = 0;
 static unsigned long lastDiscMillis  = 0;
 static unsigned long lastFullRefresh = 0;
 static bool manualRefreshRequested   = false;
+static int  currentScreen            = 0;  // 0 = Übersicht, 1+ = Detailscreen je Gruppe
 
 // NTP
 static const char* NTP_TZ = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -510,10 +511,44 @@ static void stopWebServer() {
   webServerRunning = false;
 }
 
+// ── Screen helpers ────────────────────────────────────────────────────────────
+
+// Liefert die Anzahl der aktiven Gruppen mit mindestens einem Sensor.
+static int countDetailScreens() {
+  int n = 0;
+  for (int g = 0; g < MAX_LABEL_GROUPS; g++) {
+    if (labelGroups[g].used && labelGroups[g].enabled && countTotalInGroup(g) > 0) n++;
+  }
+  return n;
+}
+
+// Gibt den Gruppen-Index für Detailscreen screenIdx (1-basiert) zurück, oder -1.
+static int groupForScreen(int screenIdx) {
+  int n = 0;
+  for (int g = 0; g < MAX_LABEL_GROUPS; g++) {
+    if (!labelGroups[g].used || !labelGroups[g].enabled || countTotalInGroup(g) == 0) continue;
+    n++;
+    if (n == screenIdx) return g;
+  }
+  return -1;
+}
+
+static void showCurrentScreen() {
+  String t   = currentTimeStr();
+  String ip  = WiFi.localIP().toString();
+  if (currentScreen == 0) {
+    showOverviewScreen(t, ip, wifiConnected, webServerRunning);
+  } else {
+    int g = groupForScreen(currentScreen);
+    if (g >= 0) showGroupScreen(g, t, ip, wifiConnected, webServerRunning);
+    else        showOverviewScreen(t, ip, wifiConnected, webServerRunning);
+  }
+}
+
 // ── EPD helper ────────────────────────────────────────────────────────────────
 
 // Stellt das Display vom Vollbild- in den Partial-Modus zurück und zeigt
-// die Hauptanzeige. Wird nach dem Einstellungsmenü und nach jedem Full-Refresh
+// den aktuellen Screen. Wird nach dem Einstellungsmenü und nach jedem Full-Refresh
 // benötigt.
 static void reInitPartialAndShow() {
   display->EPD_Init();
@@ -521,7 +556,7 @@ static void reInitPartialAndShow() {
   display->EPD_DisplayPartBaseImage();
   display->EPD_Init_Partial();
   lastFullRefresh = millis();
-  showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
+  showCurrentScreen();
 }
 
 // ── EPD setup ─────────────────────────────────────────────────────────────────
@@ -612,7 +647,7 @@ static void pollHA() {
 
     bool doFull = (now - lastFullRefresh >= FULL_REFRESH_INTERVAL_MS);
     if (doFull) reInitPartialAndShow();
-    else        showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
+    else        showCurrentScreen();
   }
 }
 
@@ -637,7 +672,10 @@ static bool connectWifi() {
   }
 
   WiFi.begin(); // NVS-Zugangsdaten laden, Verbindung starten
-  delay(500);   // kurz warten bis SSID aus NVS gelesen ist
+
+  // Warten bis SSID aus NVS gelesen ist (kann >500ms dauern)
+  unsigned long t0 = millis();
+  while (WiFi.SSID().length() == 0 && millis() - t0 < 3000) delay(100);
 
   String savedSsid = WiFi.SSID();
 
@@ -687,7 +725,8 @@ static bool connectWifi() {
     }
     // retry → WiFi.begin() neu starten und Schleife wiederholen
     WiFi.begin();
-    delay(500);
+    unsigned long tr = millis();
+    while (WiFi.SSID().length() == 0 && millis() - tr < 3000) delay(100);
   }
 }
 
@@ -734,20 +773,27 @@ void setup() {
     if (discDone && discEntityCount > 0) {
       haFetchDwStates(haBaseUrl, haToken);
     }
-    showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, false);
+    showCurrentScreen();
   }
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 
 void loop() {
-  // BTN_REC: manueller Refresh
+  // BTN_REC: nächster Screen (kurz), oder manueller Refresh wenn nur ein Screen
   if (digitalRead(BTN_REC) == LOW) {
     delay(50);
     if (digitalRead(BTN_REC) == LOW) {
       while (digitalRead(BTN_REC) == LOW) delay(10);
-      Serial.println("[BTN] Manueller Refresh");
-      manualRefreshRequested = true;
+      int total = 1 + countDetailScreens(); // Screen 0 + N Detailscreens
+      if (total > 1) {
+        currentScreen = (currentScreen + 1) % total;
+        Serial.printf("[BTN] Screen %d/%d\n", currentScreen, total-1);
+        showCurrentScreen();
+      } else {
+        Serial.println("[BTN] Manueller Refresh");
+        manualRefreshRequested = true;
+      }
     }
   }
 
@@ -766,7 +812,7 @@ void loop() {
         if (wifiConnected) {
           if (webServerRunning) { stopWebServer(); Serial.println("[WEB] Gestoppt"); }
           else                  startWebServer();
-          showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
+          showCurrentScreen();
         }
       }
     }

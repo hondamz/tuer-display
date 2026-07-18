@@ -101,7 +101,7 @@ Labels in Home Assistant setzen:
 
 | Taste | Dauer | Funktion |
 |---|---|---|
-| **BTN_REC** | Kurz | Sofortiger manueller Refresh |
+| **BTN_REC** | Kurz | Nächsten Screen anzeigen (zyklisch) — bei nur einem Screen: manueller Refresh |
 | **BTN_PWR** | Kurz (<0,5s) | Web-Konfigurationsportal ein/aus |
 | **BTN_PWR** | Lang (≥0,5s) | Einstellungsmenü öffnen |
 
@@ -119,24 +119,49 @@ Im Menü:
 
 ## Anzeigen und Statusmeldungen
 
-### Hauptanzeige
+### Screen 0 — Übersicht (Standardanzeige)
+
+Zeigt nur die Fenster- und Türen-Gruppen. Unter jeder Gruppenüberschrift werden **nur die offenen Sensoren** aufgelistet, damit der Screen auch bei vielen Sensoren übersichtlich bleibt.
 
 ```
 ┌────────────────────────┐
 │  ████ 2 OFFEN ████     │  ← Anzahl offener Sensoren
 ├────────────────────────┤
 │ □ Fenster       2/5    │  ← Gruppe: 2 von 5 offen
-│  ● Wohnzimmer  OFFEN   │  ← ● = offen (Problem)
-│  ○ Kueche      zu      │  ← ○ = geschlossen (OK)
-│  ○ Bad         zu      │
+│  ● Wohnzimmer  OFFEN   │  ← nur offene Sensoren
+│  ● Schlafzi.   OFFEN   │
 ├────────────────────────┤
 │ □ Tueren        1/3    │
 │  ● Haustuer    OFFEN   │
-│  ○ Garage      zu      │
 ├────────────────────────┤
-│ WiFi OK      │  14:35  │  ← Statuszeile
+│ 192.168.50.42          │  ← IP-Adresse
+│────────────────────────│
+│ WiFi OK        14:35   │  ← Statuszeile
 └────────────────────────┘
 ```
+
+### Screen 1+ — Detailansicht je Gruppe
+
+Für jede aktive Sensor-Gruppe gibt es einen eigenen Detailscreen mit **allen Sensoren** (offen und geschlossen).
+
+```
+┌────────────────────────┐
+│  ████  FENSTER  ████   │
+├────────────────────────┤
+│ □ Fenster       2/5    │
+│  ● Wohnzimmer  OFFEN   │
+│  ○ Kueche      zu      │
+│  ○ Bad         zu      │
+│  ● Schlafzi.   OFFEN   │
+│  ○ Keller      zu      │
+├────────────────────────┤
+│ 192.168.50.42          │
+│────────────────────────│
+│ WiFi OK        14:35   │
+└────────────────────────┘
+```
+
+**BTN_REC** (kurzer Druck) schaltet zum nächsten Screen weiter (zyklisch).
 
 ### Header-Zeile (oben)
 

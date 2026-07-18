@@ -114,7 +114,7 @@ void strokeRoundRect(int x, int y, int w, int h, int r, int t, uint8_t c) {
 // ── Screen control ────────────────────────────────────────────────────────────
 
 void clearWhite()   { display->EPD_Clear(); }
-void refreshFull()  { display->EPD_Display(); }
+void refreshFull()  { display->EPD_Init(); display->EPD_Display(); }
 void refreshPart()  { display->EPD_DisplayPart(); }
 
 // ── Fonts ─────────────────────────────────────────────────────────────────────
