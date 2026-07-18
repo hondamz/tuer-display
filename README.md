@@ -38,6 +38,7 @@ arduino-cli upload --fqbn esp32:esp32:esp32s3 \
 
 | Version | Ordner | Beschreibung |
 |---|---|---|
+| v1.1 | `firmware 1.1` | Einstellungsmenü, Web-Indikator, WLAN-Persistenz, Sensor-Namen konfigurierbar |
 | v1.0 | `firmware 1.0` | WiFiManager, HA Tür/Fenster-Status, E-Paper Anzeige, Web-Config |
 
 ## Lizenz

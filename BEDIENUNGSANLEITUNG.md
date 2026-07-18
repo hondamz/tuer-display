@@ -38,7 +38,7 @@ Das Gerät wird über den USB-C-Anschluss mit Strom versorgt. Nach dem Anschlie�
 
 ### 2. WLAN-Konfiguration (Ersteinrichtung)
 
-Beim ersten Start erscheint auf dem Display:
+Beim allerersten Start (keine gespeicherten WLAN-Zugangsdaten) erscheint auf dem Display:
 
 ```
 ┌────────────────────────┐
@@ -59,7 +59,25 @@ Beim ersten Start erscheint auf dem Display:
 4. Das Heimnetzwerk auswählen und das Passwort eingeben
 5. Auf **"Save"** klicken — das Gerät verbindet sich und startet automatisch
 
-Die WLAN-Zugangsdaten werden dauerhaft gespeichert und bei jedem Neustart automatisch verwendet.
+Die WLAN-Zugangsdaten werden dauerhaft gespeichert. **Bei jedem weiteren Neustart verbindet sich das Gerät automatisch** — ohne erneuten Setup-Vorgang.
+
+**Kein WLAN verfügbar nach Neustart?**  
+Kann das Gerät beim Start keine WLAN-Verbindung herstellen (z. B. Router nicht erreichbar), zeigt das Display:
+
+```
+┌────────────────────────┐
+│     TÜR-DISPLAY        │
+│  Keine WLAN-Verbindung │
+│  Gespeichertes Netz:   │
+│  MeinHeimNetz          │
+│  ─────────────────     │
+│  REC: 60s nochmal      │
+│  PWR: WLAN einrichten  │
+└────────────────────────┘
+```
+
+- **BTN_REC** drücken: 60 Sekunden erneut versuchen
+- **BTN_PWR** drücken: WLAN-Setup-Portal starten (für neues WLAN oder Passwort-Änderung)
 
 ### 3. Home Assistant Konfiguration
 
@@ -81,10 +99,21 @@ Labels in Home Assistant setzen:
 
 ## Tasten-Bedienung
 
-| Taste | Position | Funktion |
+| Taste | Dauer | Funktion |
 |---|---|---|
-| **BTN_REC** | Links (GPIO 0) | Sofortiger manueller Refresh |
-| **BTN_PWR** | Rechts (GPIO 18) | Web-Konfigurationsportal ein/aus |
+| **BTN_REC** | Kurz | Sofortiger manueller Refresh |
+| **BTN_PWR** | Kurz (<0,5s) | Web-Konfigurationsportal ein/aus |
+| **BTN_PWR** | Lang (≥0,5s) | Einstellungsmenü öffnen |
+
+### Einstellungsmenü (BTN_PWR lang halten)
+
+Das Einstellungsmenü zeigt:
+- Aktuelles WLAN-Netz und IP-Adresse
+- Signalstärke
+
+Im Menü:
+- **BTN_REC**: Web-Konfigurationsportal ein- oder ausschalten
+- **BTN_PWR**: Zurück zur Hauptanzeige
 
 ---
 
@@ -117,6 +146,7 @@ Labels in Home Assistant setzen:
 | `1 OFFEN` | Genau ein Sensor ist offen |
 | `N OFFEN` | N Sensoren sind offen |
 | `TUER-DISPLAY` | Daten werden noch geladen |
+| `W` (kleines Symbol oben rechts) | Web-Konfigurationsportal ist aktiv |
 
 ### Sensor-Status
 
@@ -143,8 +173,9 @@ Nach dem Drücken von **BTN_PWR** ist das Konfigurationsportal erreichbar:
 | Adresse | Inhalt |
 |---|---|
 | `http://<IP>/` | Geräteinformationen, Status, manueller Refresh |
-| `http://<IP>/ha` | Home Assistant URL und Access Token |
-| `http://<IP>/labels` | Sensor-Gruppen konfigurieren |
+| `http://<IP>/ha` | Home Assistant URL, Access Token und Abfrageintervall |
+| `http://<IP>/labels` | Sensor-Gruppen konfigurieren (HA-Labels) |
+| `http://<IP>/sensors` | Sensor-Anzeigenamen individuell anpassen |
 | `http://<IP>/wifi` | WLAN-Status, WLAN neu einrichten |
 
 Die aktuelle IP-Adresse wird in der Statuszeile des Displays angezeigt, sobald WiFi verbunden ist.

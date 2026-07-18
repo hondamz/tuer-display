@@ -115,4 +115,69 @@ Automatische Zeitsynchronisation über NTP (pool.ntp.org) mit automatischer Somm
 
 ---
 
+## v1.1 — Einstellungsmenü, Web-Portal-Indikator, verbesserter WLAN-Boot
+
+**Ordner:** `firmware 1.1`  
+**Datum:** 2026-07-18
+
+### Geändert: WLAN-Boot-Verhalten
+
+Bisher lief der WiFiManager bei jedem Boot als Erstes und blockierte. Ab v1.1:
+
+1. Beim Start wird versucht, mit den **gespeicherten WLAN-Zugangsdaten** zu verbinden (60 Sekunden Timeout).
+2. Klappt das, läuft alles normal weiter — kein Portal, keine Interaktion nötig.
+3. Schlägt die Verbindung fehl, erscheint auf dem Display:
+   - Der Name des gespeicherten Netzes
+   - `REC: 60s nochmal` → erneuter Verbindungsversuch
+   - `PWR: WLAN einrichten` → startet WiFiManager-Portal
+4. Gibt es noch keine gespeicherten Zugangsdaten (Ersteinrichtung), startet der WiFiManager-Portal direkt.
+
+**Warum?** WLAN-Zugangsdaten bleiben jetzt dauerhaft gespeichert und werden nach einem Stromausfall automatisch verwendet, ohne dass der Anwender eingreifen muss.
+
+**Technisch:** `WiFi.begin()` ohne Argumente verwendet die zuletzt im ESP32-Flash gespeicherten Zugangsdaten (werden vom WiFiManager beim ersten Setup einmalig geschrieben).
+
+### Neu: Einstellungsmenü auf dem E-Paper-Display
+
+Über einen **langen Druck auf BTN_PWR (≥ 500ms)** öffnet sich ein Einstellungsmenü:
+
+- Zeigt aktuelles WLAN-Netz, IP-Adresse und Signalstärke
+- **REC**: Web-Konfigurationsportal ein- oder ausschalten
+- **PWR**: Zurück zur Hauptanzeige
+
+Beim Verlassen wird ein Full-Refresh durchgeführt, um den Partial-Refresh-Modus korrekt wiederherzustellen.
+
+### Neu: Web-Portal-Indikator im Display-Header
+
+Wenn das Web-Konfigurationsportal aktiv ist, erscheint oben rechts im schwarzen Header-Balken ein kleines weißes **„W"**-Symbol. So ist der Portal-Status auf einen Blick erkennbar, ohne in die Statuszeile schauen zu müssen.
+
+### Neu: Sensor-Anzeigenamen konfigurierbar (Web-Portal `/sensors`)
+
+Im Web-Portal unter `/sensors` werden alle entdeckten Sensoren aufgelistet. Für jeden Sensor kann ein eigener Anzeigename eingegeben werden, der auf dem Display statt dem HA-Friendly-Name erscheint.
+
+- Leeres Feld = HA-Name wird verwendet
+- Namen werden im NVS gespeichert und bleiben nach einem Neustart erhalten
+- Nach Discovery wird `applyNameOverrides()` aufgerufen, um die Überschreibungen sofort anzuwenden
+
+### Geändert: Tasten-Belegung
+
+| Taste | Kurz (<500ms) | Lang (≥500ms) |
+|---|---|---|
+| BTN_REC | Manueller Refresh | — |
+| BTN_PWR | Web-Konfigurationsportal ein/aus | Einstellungsmenü öffnen |
+
+### Geändert: Web-Portal-Navigation
+
+Die Navigationsleiste enthält jetzt einen zusätzlichen Punkt:
+`Info | HA | Labels | Sensoren | WLAN`
+
+### Technische Details
+
+- Neue Funktion `connectWifi()` kapselt die gesamte Boot-WiFi-Logik
+- Neue Funktion `enterSettings()` ist blockierend und bedient das E-Paper-Einstellungsmenü
+- Neue Funktion `reInitPartialAndShow()` stellt nach Full-Refresh den Partial-Modus wieder her
+- `applyNameOverrides()` in `ha.cpp` wendet alle NVS-gespeicherten Namensüberschreibungen an
+- NVS-Key `"nmOv"`: serialisiertes Format `"entityId|name~entityId|name~..."`
+
+---
+
 *Weitere Einträge folgen mit jeder Firmware-Erweiterung.*
