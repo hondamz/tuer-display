@@ -224,6 +224,29 @@ Der feste `delay(500)` nach `WiFi.begin()` reichte auf manchen Geräten nicht au
 
 **Fix:** Statt fixem Delay wartet der Code nun aktiv in einer Schleife (max. 3 Sekunden) bis `WiFi.SSID().length() > 0` — oder fährt dann erst mit dem WiFiManager fort.
 
+### Neu: Deep Sleep zwischen Polls
+
+Der ESP32-S3 wechselt zwischen den HA-Abfragen in den Deep Sleep (~15 µA). Das spart dramatisch Strom und ermöglicht Akku-Betrieb.
+
+**Verhalten je nach Wake-Ursache:**
+
+| Wake-Ursache | Verhalten |
+|---|---|
+| Timer (normal) | Stille WiFi-Verbindung (`quickConnect`), HA-Status holen, nur bei Änderung Display neu zeichnen, schlafen |
+| BTN_REC | Stille Verbindung, frischen Status holen, Screen wechseln, schlafen |
+| BTN_PWR kurz | Verbinden, Web-Portal starten, wach bleiben bis Portal gestoppt |
+| BTN_PWR lang | Verbinden, Einstellungsmenü, danach schlafen |
+
+**Persistenz über Deep Sleep (RTC-RAM):**
+- Aktueller Screen-Index
+- Zeitstempel der letzten Statusänderung
+- Zustandssnapshot aller Entitäten (für Änderungserkennung)
+- `discEntities[]` (damit nach Wake kein Discovery nötig ist, außer alle N Polls)
+- Zähler für Full-Refresh-Intervall und Discovery-Intervall
+
+**Bugfix: Display blieb auf "Verbinde mit..." stehen**  
+`connectWifi()` nutzt `refreshFull()` → schaltet Display in Full-Modus. Wenn danach kein `showCurrentScreen()` aufgerufen wurde (keine Statusänderung), blieb der Connecting-Screen sichtbar. Fix: Timer- und BTN_REC-Wakes nutzen `quickConnect()` (kein Display-Update), `connectWifi()` nur noch beim ersten Boot und BTN_PWR-Wake.
+
 ---
 
 *Weitere Einträge folgen mit jeder Firmware-Erweiterung.*

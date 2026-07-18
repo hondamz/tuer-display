@@ -85,13 +85,61 @@ static const struct { const char* displayName; const char* haLabel; uint8_t icon
   };
 static constexpr int DEFAULTS_COUNT = sizeof(DEFAULTS)/sizeof(DEFAULTS[0]);
 
-// State
-static bool wifiConnected = false;
-static unsigned long lastPollMillis  = 0;
-static unsigned long lastDiscMillis  = 0;
-static unsigned long lastFullRefresh = 0;
-static bool manualRefreshRequested   = false;
-static int  currentScreen            = 0;  // 0 = Übersicht, 1+ = Detailscreen je Gruppe
+// ── Deep-Sleep-persistente Variablen (RTC-RAM, überleben Deep Sleep) ──────────
+
+struct StateSnap { bool open; bool valid; };
+
+RTC_DATA_ATTR static int        rtcScreen             = 0;
+RTC_DATA_ATTR static char       rtcChangeTime[8]      = "";
+RTC_DATA_ATTR static StateSnap  rtcSnap[MAX_DISC_ENTITIES];
+RTC_DATA_ATTR static int        rtcSnapCount          = -1; // -1 = noch nie gezeichnet
+RTC_DATA_ATTR static DiscEntity rtcEntities[MAX_DISC_ENTITIES];
+RTC_DATA_ATTR static int        rtcEntityCount        = 0;
+RTC_DATA_ATTR static bool       rtcDiscDone           = false;
+RTC_DATA_ATTR static int        rtcPollsSinceDiscover = 999; // hoch = Discovery beim 1. Wake
+RTC_DATA_ATTR static int        rtcPollsSinceFull     = 0;
+
+// ── State (RAM, wird bei jedem Wake neu gesetzt) ──────────────────────────────
+
+static bool   wifiConnected    = false;
+static int    currentScreen    = 0;
+static String lastChangeTimeStr = "";
+
+// ── Snapshot / RTC Helpers ────────────────────────────────────────────────────
+
+static bool statesChanged() {
+  if (discEntityCount != rtcSnapCount) return true;
+  for (int i = 0; i < discEntityCount; i++) {
+    if (discEntities[i].open  != rtcSnap[i].open ||
+        discEntities[i].valid != rtcSnap[i].valid) return true;
+  }
+  return false;
+}
+
+static void saveSnapshot() {
+  rtcSnapCount = discEntityCount;
+  for (int i = 0; i < discEntityCount; i++) {
+    rtcSnap[i].open  = discEntities[i].open;
+    rtcSnap[i].valid = discEntities[i].valid;
+  }
+}
+
+static void loadFromRtc() {
+  currentScreen     = rtcScreen;
+  lastChangeTimeStr = rtcChangeTime;
+  discEntityCount   = rtcEntityCount;
+  discDone          = rtcDiscDone;
+  dwDataValid       = (rtcSnapCount >= 0);
+  memcpy(discEntities, rtcEntities, sizeof(DiscEntity) * MAX_DISC_ENTITIES);
+}
+
+static void saveToRtc() {
+  rtcScreen      = currentScreen;
+  strlcpy(rtcChangeTime, lastChangeTimeStr.c_str(), sizeof(rtcChangeTime));
+  rtcEntityCount = discEntityCount;
+  rtcDiscDone    = discDone;
+  memcpy(rtcEntities, discEntities, sizeof(DiscEntity) * MAX_DISC_ENTITIES);
+}
 
 // NTP
 static const char* NTP_TZ = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -246,7 +294,9 @@ static void handleRoot() {
 }
 
 static void handleRefreshPost() {
-  manualRefreshRequested = true;
+  // Im Web-Portal-Modus: sofort Poll anstoßen
+  doHaPoll(true);
+  saveToRtc();
   webServer.sendHeader("Location", "/"); webServer.send(303);
 }
 
@@ -272,8 +322,7 @@ static void handleHaPost() {
   saveSettings();
   dwDataValid = false;
   discDone    = false;
-  lastDiscMillis = 0;
-  lastPollMillis = 0;
+  rtcPollsSinceDiscover = 999; // Discovery beim nächsten Poll erzwingen
   webServer.sendHeader("Location", "/ha"); webServer.send(303);
 }
 
@@ -312,7 +361,8 @@ static void handleLabelsPost() {
     snprintf(k,sizeof(k),"lgE%d",i); labelGroups[i].enabled = webServer.hasArg(k);
   }
   saveSettings();
-  discDone = false; lastDiscMillis = 0;
+  discDone = false;
+  rtcPollsSinceDiscover = 999;
   webServer.sendHeader("Location", "/labels"); webServer.send(303);
 }
 
@@ -513,7 +563,6 @@ static void stopWebServer() {
 
 // ── Screen helpers ────────────────────────────────────────────────────────────
 
-// Liefert die Anzahl der aktiven Gruppen mit mindestens einem Sensor.
 static int countDetailScreens() {
   int n = 0;
   for (int g = 0; g < MAX_LABEL_GROUPS; g++) {
@@ -522,7 +571,6 @@ static int countDetailScreens() {
   return n;
 }
 
-// Gibt den Gruppen-Index für Detailscreen screenIdx (1-basiert) zurück, oder -1.
 static int groupForScreen(int screenIdx) {
   int n = 0;
   for (int g = 0; g < MAX_LABEL_GROUPS; g++) {
@@ -534,29 +582,75 @@ static int groupForScreen(int screenIdx) {
 }
 
 static void showCurrentScreen() {
-  String t   = currentTimeStr();
-  String ip  = WiFi.localIP().toString();
+  String ip = wifiConnected ? WiFi.localIP().toString() : "";
   if (currentScreen == 0) {
-    showOverviewScreen(t, ip, wifiConnected, webServerRunning);
+    showOverviewScreen(lastChangeTimeStr, ip, wifiConnected, webServerRunning);
   } else {
     int g = groupForScreen(currentScreen);
-    if (g >= 0) showGroupScreen(g, t, ip, wifiConnected, webServerRunning);
-    else        showOverviewScreen(t, ip, wifiConnected, webServerRunning);
+    if (g >= 0) showGroupScreen(g, lastChangeTimeStr, ip, wifiConnected, webServerRunning);
+    else        showOverviewScreen(lastChangeTimeStr, ip, wifiConnected, webServerRunning);
   }
 }
 
 // ── EPD helper ────────────────────────────────────────────────────────────────
 
-// Stellt das Display vom Vollbild- in den Partial-Modus zurück und zeigt
-// den aktuellen Screen. Wird nach dem Einstellungsmenü und nach jedem Full-Refresh
-// benötigt.
 static void reInitPartialAndShow() {
   display->EPD_Init();
   display->EPD_Display();
   display->EPD_DisplayPartBaseImage();
   display->EPD_Init_Partial();
-  lastFullRefresh = millis();
+  rtcPollsSinceFull = 0;
   showCurrentScreen();
+}
+
+// ── Sleep ─────────────────────────────────────────────────────────────────────
+
+static void goToSleep() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  uint64_t btnMask = (1ULL << BTN_REC) | (1ULL << BTN_PWR);
+  esp_sleep_enable_ext1_wakeup(btnMask, ESP_EXT1_WAKEUP_ANY_LOW);
+  esp_sleep_enable_timer_wakeup((uint64_t)haPollSec * 1000000ULL);
+  Serial.printf("[SLEEP] %ds bis naechster Poll\n", haPollSec);
+  Serial.flush();
+  esp_deep_sleep_start();
+}
+
+// ── HA-Poll (einmalig, wird direkt aus setup() aufgerufen) ───────────────────
+
+static void doHaPoll(bool forceRedraw) {
+  // Discovery wenn nötig
+  int discIntervalPolls = max(1, (int)(DISCOVER_INTERVAL_MS / 1000 / haPollSec));
+  if (rtcPollsSinceDiscover >= discIntervalPolls || !rtcDiscDone) {
+    Serial.println("[HA] Discovery...");
+    haDiscoverLabels(haBaseUrl, haToken);
+    applyNameOverrides();
+    rtcPollsSinceDiscover = 0;
+  } else {
+    rtcPollsSinceDiscover++;
+  }
+
+  if (!discDone || discEntityCount == 0) return;
+
+  Serial.println("[HA] Hole Status...");
+  if (!haFetchDwStates(haBaseUrl, haToken)) return;
+  dwDataValid = true;
+
+  bool changed = statesChanged();
+  if (changed) {
+    saveSnapshot();
+    lastChangeTimeStr = currentTimeStr();
+    Serial.printf("[HA] Aenderung: %d offen, Zeit %s\n", countOpen(), lastChangeTimeStr.c_str());
+  } else {
+    Serial.println("[HA] Keine Aenderung");
+  }
+
+  rtcPollsSinceFull++;
+  int fullIntervalPolls = max(1, (int)(FULL_REFRESH_INTERVAL_MS / 1000 / haPollSec));
+  bool doFull = (rtcPollsSinceFull >= fullIntervalPolls);
+
+  if (doFull)                 reInitPartialAndShow();
+  else if (changed || forceRedraw) showCurrentScreen();
 }
 
 // ── EPD setup ─────────────────────────────────────────────────────────────────
@@ -618,40 +712,28 @@ static void enterSettings() {
   reInitPartialAndShow();
 }
 
-// ── Poll logic ────────────────────────────────────────────────────────────────
-
-static void pollHA() {
-  if (!wifiConnected) return;
-
-  unsigned long now = millis();
-  bool discDue = (lastDiscMillis == 0 || now - lastDiscMillis >= DISCOVER_INTERVAL_MS);
-  if (discDue) {
-    Serial.println("[HA] Starte Discovery...");
-    haDiscoverLabels(haBaseUrl, haToken);
-    applyNameOverrides();
-    lastDiscMillis = millis();
-  }
-
-  if (!discDone || discEntityCount == 0) return;
-
-  bool pollDue = (lastPollMillis == 0 || now - lastPollMillis >= (unsigned long)haPollSec * 1000UL);
-  if (!pollDue && !manualRefreshRequested) return;
-
-  manualRefreshRequested = false;
-  lastPollMillis = millis();
-
-  Serial.println("[HA] Hole Sensor-Status...");
-  if (haFetchDwStates(haBaseUrl, haToken)) {
-    dwDataValid = true;
-    Serial.printf("[HA] %d offen\n", countOpen());
-
-    bool doFull = (now - lastFullRefresh >= FULL_REFRESH_INTERVAL_MS);
-    if (doFull) reInitPartialAndShow();
-    else        showCurrentScreen();
-  }
-}
-
 // ── WiFi boot ─────────────────────────────────────────────────────────────────
+
+// Schnelle, stille Verbindung für Timer-Wakes (kein Display-Update).
+// Gibt true zurück wenn verbunden, false nach 15s Timeout.
+static bool quickConnect() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(wHostname.c_str());
+  if (wStaticIp && wStaticAddr.length() > 0) {
+    IPAddress ip, mask, gw, dns;
+    ip.fromString(wStaticAddr);
+    mask.fromString(wStaticMask.length() > 0 ? wStaticMask : "255.255.255.0");
+    gw.fromString(wStaticGw);
+    dns.fromString(wStaticDns.length() > 0 ? wStaticDns : wStaticGw);
+    WiFi.config(ip, gw, mask, dns);
+  }
+  WiFi.begin();
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) delay(200);
+  bool ok = (WiFi.status() == WL_CONNECTED);
+  Serial.printf("[WiFi] %s\n", ok ? WiFi.localIP().toString().c_str() : "Timeout");
+  return ok;
+}
 // Versucht gespeicherte WLAN-Zugangsdaten. Schlägt das 60s-Timeout fehl,
 // kann der Anwender per Taste wiederholen oder den WiFiManager starten.
 // Gibt true zurück, wenn eine Verbindung besteht.
@@ -734,93 +816,161 @@ static bool connectWifi() {
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
-  Serial.println("\n[BOOT] Tuer-Display v1.1");
+  delay(100);
 
-  initDisplay();
-  showBoot("Starte...");
-
-  loadSettings();
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  Serial.printf("\n[BOOT] Tuer-Display v1.1 – Wakeup: %d\n", cause);
 
   pinMode(BTN_REC, INPUT_PULLUP);
   pinMode(BTN_PWR, INPUT_PULLUP);
 
-  wifiConnected = connectWifi();
+  loadSettings();
+  initDisplay();
 
-  // Vollständiger EPD-Clear-Zyklus nach connectWifi() — stellt sicher dass
-  // kein Rest-Bild des WiFiManager-Portals als Geist-Bild stehen bleibt.
-  clearWhite();
-  display->EPD_Init();
-  display->EPD_Display();
-  display->EPD_DisplayPartBaseImage();
-  display->EPD_Init_Partial();
-  lastFullRefresh = millis();
+  // ── Erster Start ────────────────────────────────────────────────────────────
+  if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    showBoot("Starte...");
+    wifiConnected = connectWifi();
 
-  if (!wifiConnected) {
-    Serial.println("[WiFi] Kein WLAN");
-    showError("Kein WLAN. BTN_PWR lang = Einstellungen");
-  } else {
-    Serial.printf("[WiFi] Verbunden: %s / %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    clearWhite();
+    display->EPD_Init();
+    display->EPD_Display();
+    display->EPD_DisplayPartBaseImage();
+    display->EPD_Init_Partial();
 
+    if (!wifiConnected) {
+      showError("Kein WLAN. BTN_PWR lang = Einstellungen");
+      saveToRtc();
+      goToSleep();
+      return;
+    }
+
+    Serial.printf("[WiFi] %s / %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     configTzTime(NTP_TZ, "pool.ntp.org", "time.nist.gov");
     delay(1500);
 
     showBoot("Lade Sensoren...");
-    haDiscoverLabels(haBaseUrl, haToken);
-    applyNameOverrides();
-    lastDiscMillis = millis();
-
-    if (discDone && discEntityCount > 0) {
-      haFetchDwStates(haBaseUrl, haToken);
-    }
+    rtcPollsSinceDiscover = 999; // Discovery erzwingen
+    doHaPoll(true);
+    saveToRtc();
     showCurrentScreen();
+    goToSleep();
+    return;
   }
+
+  // ── Wake durch Timer (normaler Poll-Zyklus) ─────────────────────────────────
+  if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+    loadFromRtc();
+    // Stille Verbindung: kein showConnecting(), Display bleibt unberührt
+    wifiConnected = quickConnect();
+    if (wifiConnected) {
+      configTzTime(NTP_TZ, "pool.ntp.org", "time.nist.gov");
+      delay(300);
+      doHaPoll(false);
+    }
+    saveToRtc();
+    goToSleep();
+    return;
+  }
+
+  // ── Wake durch Taste (EXT1) ─────────────────────────────────────────────────
+  if (cause == ESP_SLEEP_WAKEUP_EXT1) {
+    loadFromRtc();
+
+    uint64_t pins = esp_sleep_get_ext1_wakeup_status();
+    bool recWoke  = pins & (1ULL << BTN_REC);
+
+    // Tastendauer messen (Taste könnte noch gedrückt sein)
+    delay(30);
+    unsigned long pressStart = millis();
+    int   activePin = recWoke ? BTN_REC : BTN_PWR;
+    while (digitalRead(activePin) == LOW) delay(10);
+    unsigned long pressDur = millis() - pressStart;
+    bool longPress = (pressDur >= WIFI_LONG_PRESS_MS);
+
+    if (recWoke) {
+      // Screen wechseln + frischen Poll holen (still, kein Connecting-Screen)
+      wifiConnected = quickConnect();
+      if (wifiConnected) {
+        configTzTime(NTP_TZ, "pool.ntp.org", "time.nist.gov");
+        delay(300);
+        doHaPoll(false);
+      }
+      int total = 1 + countDetailScreens();
+      if (total > 1) currentScreen = (currentScreen + 1) % total;
+      showCurrentScreen(); // zeigt immer den neuen Screen
+      saveToRtc();
+      goToSleep();
+      return;
+    }
+
+    // BTN_PWR
+    wifiConnected = connectWifi();
+    if (!wifiConnected) { goToSleep(); return; }
+
+    configTzTime(NTP_TZ, "pool.ntp.org", "time.nist.gov");
+    delay(300);
+    doHaPoll(false);
+
+    clearWhite();
+    display->EPD_Init();
+    display->EPD_Display();
+    display->EPD_DisplayPartBaseImage();
+    display->EPD_Init_Partial();
+
+    if (longPress) {
+      enterSettings(); // blocking; exitiert via reInitPartialAndShow()
+      saveToRtc();
+      if (!webServerRunning) { goToSleep(); return; }
+      // Web-Portal läuft: in loop() weitermachen
+    } else {
+      startWebServer();
+      showCurrentScreen();
+      // in loop() weitermachen
+    }
+    saveToRtc();
+    return; // → loop()
+  }
+
+  // Unbekannter Wake-Grund: schlafen
+  goToSleep();
 }
 
-// ── Loop ──────────────────────────────────────────────────────────────────────
+// ── Loop — läuft nur wenn Web-Portal aktiv ────────────────────────────────────
 
 void loop() {
-  // BTN_REC: nächster Screen (kurz), oder manueller Refresh wenn nur ein Screen
+  if (!webServerRunning) { goToSleep(); return; }
+
+  webServer.handleClient();
+
+  // BTN_REC: manuellen Refresh holen
   if (digitalRead(BTN_REC) == LOW) {
     delay(50);
     if (digitalRead(BTN_REC) == LOW) {
       while (digitalRead(BTN_REC) == LOW) delay(10);
-      int total = 1 + countDetailScreens(); // Screen 0 + N Detailscreens
-      if (total > 1) {
-        currentScreen = (currentScreen + 1) % total;
-        Serial.printf("[BTN] Screen %d/%d\n", currentScreen, total-1);
-        showCurrentScreen();
-      } else {
-        Serial.println("[BTN] Manueller Refresh");
-        manualRefreshRequested = true;
-      }
+      doHaPoll(true);
+      saveToRtc();
     }
   }
 
-  // BTN_PWR: kurz = Web-Portal umschalten, lang = Einstellungsmenü
+  // BTN_PWR: kurz = Portal stoppen + schlafen, lang = Einstellungsmenü
   if (digitalRead(BTN_PWR) == LOW) {
     delay(50);
     if (digitalRead(BTN_PWR) == LOW) {
       unsigned long pressStart = millis();
       while (digitalRead(BTN_PWR) == LOW) delay(10);
-      unsigned long pressDuration = millis() - pressStart;
-
-      if (pressDuration >= WIFI_LONG_PRESS_MS) {
-        Serial.println("[BTN] Einstellungsmenü");
+      if (millis() - pressStart >= WIFI_LONG_PRESS_MS) {
         enterSettings();
+        saveToRtc();
+        if (!webServerRunning) { goToSleep(); return; }
       } else {
-        if (wifiConnected) {
-          if (webServerRunning) { stopWebServer(); Serial.println("[WEB] Gestoppt"); }
-          else                  startWebServer();
-          showCurrentScreen();
-        }
+        stopWebServer();
+        saveToRtc();
+        goToSleep();
+        return;
       }
     }
   }
 
-  if (webServerRunning) webServer.handleClient();
-
-  pollHA();
-
-  delay(100);
+  delay(20);
 }
