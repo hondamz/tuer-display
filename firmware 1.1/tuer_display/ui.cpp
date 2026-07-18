@@ -142,7 +142,7 @@ static void dotStatus(int cx, int cy, bool open) {
 // With up to 6 groups × several sensors the list can be long.
 // Current: display all groups and truncate at y=170.
 
-void showDoorWindowScreen(const String& timeStr, bool wifiOk, bool webActive) {
+void showDoorWindowScreen(const String& timeStr, const String& ipStr, bool wifiOk, bool webActive) {
   clearWhite();
 
   // ── Header ─────────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ void showDoorWindowScreen(const String& timeStr, bool wifiOk, bool webActive) {
   const int ROW_GROUP  = 19;
   const int ROW_SENSOR = 16;
   const int MARGIN_X   = 4;
-  const int MAX_Y      = 170;
+  const int MAX_Y      = 143;  // Platz für IP-Zeile über dem Trennstrich lassen
   int y = 30;
 
   if (!dwDataValid) {
@@ -230,19 +230,26 @@ void showDoorWindowScreen(const String& timeStr, bool wifiOk, bool webActive) {
     }
   }
 
+  // ── IP-Adresse direkt über dem Trennstrich ────────────────────────────────
+  // drawStr platziert Text mit y = obere Kante der Bounding-Box.
+  // Font-Höhe = 14px → Text bei y=146 belegt y=146..160, Strich bei y=163.
+  if (ipStr.length()) {
+    drawStr(MARGIN_X, 146, ipStr.c_str(), 1, BLACK);
+  }
+
   // ── Status bar ─────────────────────────────────────────────────────────────
-  hline(0, 173, EPD_W, BLACK);
-  fillRect(0, 174, EPD_W, EPD_H-174, WHITE);
+  hline(0, 163, EPD_W, BLACK);
+  fillRect(0, 164, EPD_W, EPD_H-164, WHITE);
 
-  // WiFi status icon (small)
+  // WiFi status
   const char* wifiStr = wifiOk ? "WiFi OK" : "kein WiFi";
-  drawStr(MARGIN_X, 186, wifiStr, 1, BLACK);
+  drawStr(MARGIN_X, 180, wifiStr, 1, BLACK);
 
-  if (webActive) drawStr(68, 186, "WEB", 1, BLACK);
+  if (webActive) drawStr(72, 180, "WEB", 1, BLACK);
 
   // Time right-aligned
   if (timeStr.length()) {
-    drawStr(EPD_W - MARGIN_X - textW(timeStr.c_str(), 1), 186, timeStr.c_str(), 1, BLACK);
+    drawStr(EPD_W - MARGIN_X - textW(timeStr.c_str(), 1), 180, timeStr.c_str(), 1, BLACK);
   }
 
   refreshPart();

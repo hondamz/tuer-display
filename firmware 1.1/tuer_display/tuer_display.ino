@@ -69,6 +69,14 @@ static String haBaseUrl  = HA_DEFAULT_URL;
 static String haToken    = "";
 static int    haPollSec  = HA_DEFAULT_INTERVAL;
 
+// WiFi / Netzwerk-Einstellungen
+static String wHostname   = "HATUERESTATUS";
+static bool   wStaticIp   = false;
+static String wStaticAddr = "";
+static String wStaticMask = "255.255.255.0";
+static String wStaticGw   = "";
+static String wStaticDns  = "";
+
 // Default label group config (user can override via web UI)
 static const struct { const char* displayName; const char* haLabel; uint8_t iconType; }
   DEFAULTS[] = {
@@ -129,6 +137,14 @@ static void loadSettings() {
     if (prefs.isKey(k)) g.enabled = prefs.getBool(k);
   }
 
+  // WiFi / Netzwerk
+  wHostname   = prefs.getString("wHost",  "HATUERESTATUS");
+  wStaticIp   = prefs.getBool("wStatic",  false);
+  wStaticAddr = prefs.getString("wAddr",  "");
+  wStaticMask = prefs.getString("wMask",  "255.255.255.0");
+  wStaticGw   = prefs.getString("wGw",    "");
+  wStaticDns  = prefs.getString("wDns",   "");
+
   // Load sensor name overrides ("entityId|name~entityId|name~...")
   nameOverrideCount = 0;
   String nmOv = prefs.getString("nmOv", "");
@@ -170,6 +186,13 @@ static void saveSettings() {
     nmOv += nameOverrides[i].displayName;
   }
   prefs.putString("nmOv", nmOv);
+  // WiFi / Netzwerk
+  prefs.putString("wHost",  wHostname);
+  prefs.putBool("wStatic",  wStaticIp);
+  prefs.putString("wAddr",  wStaticAddr);
+  prefs.putString("wMask",  wStaticMask);
+  prefs.putString("wGw",    wStaticGw);
+  prefs.putString("wDns",   wStaticDns);
   prefs.end();
 }
 
@@ -203,6 +226,7 @@ static void handleRoot() {
          "</td><td style='padding:4px 6px;border-bottom:1px solid #333'>" + v + "</td></tr>";
   };
   row("Version",     "1.1");
+  row("Hostname",    wHostname);
   row("Chip",        String(ESP.getChipModel()) + " Rev " + ESP.getChipRevision());
   row("CPU",         String(ESP.getCpuFreqMHz()) + " MHz");
   row("Flash",       String(ESP.getFlashChipSize()/1048576) + " MB");
@@ -292,16 +316,26 @@ static void handleLabelsPost() {
 }
 
 static void handleSensorsGet() {
-  String s = htmlHead("Sensor-Namen");
+  String s = htmlHead("Sensoren");
+  s += "<style>"
+       ".dot{font-size:1.3em;line-height:1;vertical-align:middle;margin-right:6px}"
+       ".open{color:#e44}.closed{color:#4c4}.unknown{color:#a4a}"
+       "</style>";
   if (discEntityCount == 0) {
     s += "<p>Noch keine Sensoren entdeckt. HA konfigurieren und kurz warten.</p>";
   } else {
-    s += "<p><small>Anzeigenamen der Sensoren auf dem Display anpassen. "
-         "Leer lassen = Name aus Home Assistant.</small></p>";
+    s += "<p><small>Farbpunkt: <span class='dot open'>●</span>offen &nbsp;"
+         "<span class='dot closed'>●</span>geschlossen &nbsp;"
+         "<span class='dot unknown'>●</span>unbekannt</small></p>";
+    s += "<p><small>Anzeigenamen fuer das Display anpassen. Leer = HA-Name.</small></p>";
     s += "<form method='POST' action='/sensors'>"
          "<input type='hidden' name='cnt' value='" + String(discEntityCount) + "'>";
     for (int i=0; i<discEntityCount; i++) {
-      s += "<fieldset><legend><small>" + String(discEntities[i].entityId) + "</small></legend>";
+      const char* dotClass = !discEntities[i].valid ? "unknown"
+                           : discEntities[i].open   ? "open" : "closed";
+      s += "<fieldset><legend>";
+      s += "<span class='dot " + String(dotClass) + "'>&#9679;</span>";
+      s += "<small>" + String(discEntities[i].entityId) + "</small></legend>";
       s += "<label>Anzeigename (max. 27 Zeichen)</label>";
       s += "<input name='n"+String(i)+"' maxlength='27' value='"+String(discEntities[i].name)+"'>";
       s += "<input type='hidden' name='e"+String(i)+"' value='"+String(discEntities[i].entityId)+"'>";
@@ -330,24 +364,127 @@ static void handleSensorsPost() {
   webServer.sendHeader("Location", "/sensors"); webServer.send(303);
 }
 
+static void handleWifiScan() {
+  int n = WiFi.scanNetworks(false, true); // sync, include hidden
+  String json = "[";
+  for (int i = 0; i < n; i++) {
+    if (i) json += ",";
+    String ssid = WiFi.SSID(i);
+    ssid.replace("\"", "\\\"");
+    json += "{\"s\":\"" + ssid + "\",\"r\":" + WiFi.RSSI(i) +
+            ",\"e\":" + (WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "1" : "0") + "}";
+  }
+  json += "]";
+  WiFi.scanDelete();
+  webServer.sendHeader("Access-Control-Allow-Origin", "*");
+  webServer.send(200, "application/json", json);
+}
+
 static void handleWifiGet() {
   String s = htmlHead("WLAN");
-  s += "<p>Verbunden: <b>" + WiFi.SSID() + "</b><br>IP: " + WiFi.localIP().toString() +
-       "<br>Signal: " + WiFi.RSSI() + " dBm</p>";
-  s += "<form method='POST' action='/wifi'>"
-       "<p><small>WLAN-Zugangsdaten loeschen — Geraet startet neu und oeffnet Setup-Portal.</small></p>"
-       "<button type='submit' style='background:#c33'>WLAN zuruecksetzen</button></form>";
-  s += "</body></html>";
+
+  // ── Aktuelle Verbindung ──────────────────────────────────────────────────
+  s += "<h3>Aktuelle Verbindung</h3>"
+       "<table style='width:100%;border-collapse:collapse'>";
+  auto row = [&](const char* k, String v) {
+    s += "<tr><td style='padding:3px 6px;border-bottom:1px solid #333;width:40%'>" + String(k) +
+         "</td><td style='padding:3px 6px;border-bottom:1px solid #333'>" + v + "</td></tr>";
+  };
+  row("Hostname",  wHostname);
+  row("SSID",      WiFi.SSID());
+  row("Signal",    String(WiFi.RSSI()) + " dBm");
+  row("IP-Modus",  wStaticIp ? "Fest" : "DHCP");
+  row("IP",        WiFi.localIP().toString());
+  row("Subnetz",   WiFi.subnetMask().toString());
+  row("Gateway",   WiFi.gatewayIP().toString());
+  row("DNS",       WiFi.dnsIP().toString());
+  row("MAC",       WiFi.macAddress());
+  s += "</table>";
+
+  // ── Konfigurationsformular ───────────────────────────────────────────────
+  s += "<h3>Konfiguration</h3>"
+       "<form method='POST' action='/wifi'>"
+
+       "<fieldset><legend>Hostname</legend>"
+       "<label>Geraetename im Netzwerk</label>"
+       "<input name='hostname' maxlength='32' value='" + wHostname + "'>"
+       "</fieldset>"
+
+       "<fieldset><legend>WLAN wechseln</legend>"
+       "<label>Verfuegbare Netze</label>"
+       "<div style='display:flex;gap:6px'>"
+       "<select id='ssidSel' style='flex:1' onchange=\"document.getElementById('ssidIn').value=this.value\">"
+       "<option value=''>-- Scan starten --</option></select>"
+       "<button type='button' onclick='doScan()' style='flex:none;margin:0'>Suchen</button>"
+       "</div>"
+       "<label>SSID</label>"
+       "<input id='ssidIn' name='ssid' value=''>"
+       "<label>Passwort</label>"
+       "<input type='password' name='pass'>"
+       "<small>Leer lassen = unveraendert (nur bei SSID-Wechsel noetig)</small>"
+       "</fieldset>"
+
+       "<fieldset><legend>IP-Konfiguration</legend>"
+       "<label style='display:flex;align-items:center;gap:8px'>"
+       "<input type='checkbox' name='staticIp' id='chkStatic' value='1'";
+  if (wStaticIp) s += " checked";
+  s += " onchange='toggleStatic(this.checked)'> Feste IP-Adresse verwenden</label>"
+       "<div id='staticFields' style='display:" + String(wStaticIp ? "block" : "none") + "'>"
+       "<label>IP-Adresse</label><input name='ip'   value='" + wStaticAddr + "'>"
+       "<label>Subnetzmaske</label><input name='mask' value='" + wStaticMask + "'>"
+       "<label>Gateway</label><input name='gw'   value='" + wStaticGw   + "'>"
+       "<label>DNS-Server</label><input name='dns'  value='" + wStaticDns  + "'>"
+       "</div></fieldset>"
+
+       "<button type='submit'>Speichern &amp; Neustart</button>"
+       "</form>"
+
+       "<script>"
+       "function toggleStatic(on){document.getElementById('staticFields').style.display=on?'block':'none';}"
+       "async function doScan(){"
+       "  var sel=document.getElementById('ssidSel');"
+       "  sel.innerHTML='<option>Suche...';"
+       "  var r=await fetch('/wifi/scan');"
+       "  var nets=await r.json();"
+       "  nets.sort((a,b)=>b.r-a.r);"
+       "  sel.innerHTML=nets.map(n=>"
+       "    '<option value=\"'+n.s+'\">'+(n.e?'🔒 ':'')+n.s+' ('+n.r+' dBm)</option>'"
+       "  ).join('');"
+       "  if(nets.length>0)document.getElementById('ssidIn').value=nets[0].s;"
+       "}"
+       "</script>"
+       "</body></html>";
   webServer.send(200, "text/html", s);
 }
 
 static void handleWifiPost() {
+  String newHostname = webServer.arg("hostname"); newHostname.trim();
+  String newSsid     = webServer.arg("ssid");     newSsid.trim();
+  String newPass     = webServer.arg("pass");
+  bool   newStatic   = webServer.hasArg("staticIp");
+  String newIp       = webServer.arg("ip");   newIp.trim();
+  String newMask     = webServer.arg("mask"); newMask.trim();
+  String newGw       = webServer.arg("gw");   newGw.trim();
+  String newDns      = webServer.arg("dns");  newDns.trim();
+
+  if (newHostname.length() > 0) wHostname = newHostname;
+  wStaticIp   = newStatic;
+  wStaticAddr = newIp;
+  if (newMask.length() > 0) wStaticMask = newMask;
+  wStaticGw   = newGw;
+  wStaticDns  = newDns;
+  saveSettings();
+
   String s = htmlHead("WLAN");
-  s += "<p>WLAN-Zugangsdaten geloescht. Geraet startet neu...</p></body></html>";
+  s += "<p>Einstellungen gespeichert. Geraet startet neu...</p></body></html>";
   webServer.send(200, "text/html", s);
   delay(500);
-  WiFiManager wm;
-  wm.resetSettings();
+
+  // Neue WLAN-Credentials direkt setzen, dann Neustart
+  if (newSsid.length() > 0) {
+    WiFi.begin(newSsid.c_str(), newPass.length() > 0 ? newPass.c_str() : nullptr);
+    delay(200);
+  }
   ESP.restart();
 }
 
@@ -360,8 +497,9 @@ static void startWebServer() {
   webServer.on("/labels",  HTTP_POST, handleLabelsPost);
   webServer.on("/sensors", HTTP_GET,  handleSensorsGet);
   webServer.on("/sensors", HTTP_POST, handleSensorsPost);
-  webServer.on("/wifi",    HTTP_GET,  handleWifiGet);
-  webServer.on("/wifi",    HTTP_POST, handleWifiPost);
+  webServer.on("/wifi",      HTTP_GET,  handleWifiGet);
+  webServer.on("/wifi",      HTTP_POST, handleWifiPost);
+  webServer.on("/wifi/scan", HTTP_GET,  handleWifiScan);
   webServer.begin();
   webServerRunning = true;
   Serial.printf("[WEB] Gestartet auf http://%s/\n", WiFi.localIP().toString().c_str());
@@ -383,7 +521,7 @@ static void reInitPartialAndShow() {
   display->EPD_DisplayPartBaseImage();
   display->EPD_Init_Partial();
   lastFullRefresh = millis();
-  showDoorWindowScreen(currentTimeStr(), wifiConnected, webServerRunning);
+  showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
 }
 
 // ── EPD setup ─────────────────────────────────────────────────────────────────
@@ -474,7 +612,7 @@ static void pollHA() {
 
     bool doFull = (now - lastFullRefresh >= FULL_REFRESH_INTERVAL_MS);
     if (doFull) reInitPartialAndShow();
-    else        showDoorWindowScreen(currentTimeStr(), wifiConnected, webServerRunning);
+    else        showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
   }
 }
 
@@ -483,10 +621,29 @@ static void pollHA() {
 // kann der Anwender per Taste wiederholen oder den WiFiManager starten.
 // Gibt true zurück, wenn eine Verbindung besteht.
 static bool connectWifi() {
+  // WiFi.SSID() liefert vor WiFi.begin() immer leer — erst nach begin()
+  // sind die NVS-Zugangsdaten geladen.
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(wHostname.c_str());
+
+  // Statische IP konfigurieren, wenn gewünscht
+  if (wStaticIp && wStaticAddr.length() > 0) {
+    IPAddress ip, mask, gw, dns;
+    ip.fromString(wStaticAddr);
+    mask.fromString(wStaticMask.length() > 0 ? wStaticMask : "255.255.255.0");
+    gw.fromString(wStaticGw);
+    dns.fromString(wStaticDns.length() > 0 ? wStaticDns : wStaticGw);
+    WiFi.config(ip, gw, mask, dns);
+  }
+
+  WiFi.begin(); // NVS-Zugangsdaten laden, Verbindung starten
+  delay(500);   // kurz warten bis SSID aus NVS gelesen ist
+
   String savedSsid = WiFi.SSID();
 
   if (savedSsid.length() == 0) {
     // Noch keine gespeicherten Zugangsdaten → direkt WiFiManager
+    WiFi.disconnect(true);
     showBoot("WLAN einrichten...");
     WiFiManager wm;
     wm.setConfigPortalTimeout(WIFI_TIMEOUT_S);
@@ -496,8 +653,6 @@ static bool connectWifi() {
 
   while (true) {
     showConnecting(savedSsid.c_str());
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(); // gespeicherte Zugangsdaten verwenden
 
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
@@ -528,10 +683,11 @@ static bool connectWifi() {
       wm.setConfigPortalTimeout(WIFI_TIMEOUT_S);
       wm.setAPCallback([](WiFiManager*) { showWifiPortal(WIFI_AP_NAME, "192.168.4.1"); });
       bool ok = wm.startConfigPortal(WIFI_AP_NAME, WIFI_AP_PASSWORD);
-      if (ok) savedSsid = WiFi.SSID();
       return ok;
     }
-    // retry → Schleife wiederholen
+    // retry → WiFi.begin() neu starten und Schleife wiederholen
+    WiFi.begin();
+    delay(500);
   }
 }
 
@@ -552,6 +708,15 @@ void setup() {
 
   wifiConnected = connectWifi();
 
+  // Vollständiger EPD-Clear-Zyklus nach connectWifi() — stellt sicher dass
+  // kein Rest-Bild des WiFiManager-Portals als Geist-Bild stehen bleibt.
+  clearWhite();
+  display->EPD_Init();
+  display->EPD_Display();
+  display->EPD_DisplayPartBaseImage();
+  display->EPD_Init_Partial();
+  lastFullRefresh = millis();
+
   if (!wifiConnected) {
     Serial.println("[WiFi] Kein WLAN");
     showError("Kein WLAN. BTN_PWR lang = Einstellungen");
@@ -568,15 +733,8 @@ void setup() {
 
     if (discDone && discEntityCount > 0) {
       haFetchDwStates(haBaseUrl, haToken);
-      if (dwDataValid) {
-        display->EPD_Init();
-        display->EPD_Display();
-        display->EPD_DisplayPartBaseImage();
-        display->EPD_Init_Partial();
-        lastFullRefresh = millis();
-      }
     }
-    showDoorWindowScreen(currentTimeStr(), wifiConnected, false);
+    showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, false);
   }
 }
 
@@ -608,7 +766,7 @@ void loop() {
         if (wifiConnected) {
           if (webServerRunning) { stopWebServer(); Serial.println("[WEB] Gestoppt"); }
           else                  startWebServer();
-          showDoorWindowScreen(currentTimeStr(), wifiConnected, webServerRunning);
+          showDoorWindowScreen(currentTimeStr(), WiFi.localIP().toString(), wifiConnected, webServerRunning);
         }
       }
     }
