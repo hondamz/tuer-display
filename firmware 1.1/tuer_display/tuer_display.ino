@@ -649,17 +649,25 @@ static void doHaPoll(bool forceRedraw) {
   int fullIntervalPolls = max(1, (int)(FULL_REFRESH_INTERVAL_MS / 1000 / haPollSec));
   bool doFull = (rtcPollsSinceFull >= fullIntervalPolls);
 
-  if (doFull)                 reInitPartialAndShow();
-  else if (changed || forceRedraw) showCurrentScreen();
+  if (doFull || changed || forceRedraw) {
+    // Display initialisieren und vollständig neu aufbauen.
+    // reInitPartialAndShow() setzt EPD_Display (weißer Frame) + EPD_DisplayPartBaseImage
+    // (Base = leer) + EPD_Init_Partial, bevor showCurrentScreen() den Inhalt zeichnet.
+    // Das ist nach Deep Sleep nötig da der EPD-Controller-State verloren ging.
+    initDisplayHardware();
+    reInitPartialAndShow();
+  }
 }
 
 // ── EPD setup ─────────────────────────────────────────────────────────────────
 
-static void initDisplay() {
+// Erstellt Board und Display-Objekte (nur einmal). Kein EPD-Protokoll-Init —
+// das übernimmt reInitPartialAndShow() oder der explizite Clear-Zyklus beim Boot.
+static void initDisplayHardware() {
+  if (board) return; // bereits initialisiert
   board = new board_power_bsp_t(EPD_PWR_PIN, AUDIO_PWR_PIN, VBAT_PWR_PIN);
   board->POWEER_EPD_ON();
   delay(100);
-
   custom_lcd_spi_t spi_cfg = {
     .cs       = (uint8_t)EPD_CS_PIN,
     .dc       = (uint8_t)EPD_DC_PIN,
@@ -671,9 +679,6 @@ static void initDisplay() {
     .buffer_len = EPD_WIDTH * EPD_HEIGHT / 8,
   };
   display = new epaper_driver_display(EPD_WIDTH, EPD_HEIGHT, spi_cfg);
-  display->EPD_Init();
-  display->EPD_DisplayPartBaseImage();
-  display->EPD_Init_Partial();
 }
 
 // ── Settings menu (blocking) ──────────────────────────────────────────────────
@@ -825,10 +830,10 @@ void setup() {
   pinMode(BTN_PWR, INPUT_PULLUP);
 
   loadSettings();
-  initDisplay();
 
   // ── Erster Start ────────────────────────────────────────────────────────────
   if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    initDisplayHardware(); // Display nur beim ersten Start und Button-Wakes
     showBoot("Starte...");
     wifiConnected = connectWifi();
 
@@ -875,6 +880,7 @@ void setup() {
 
   // ── Wake durch Taste (EXT1) ─────────────────────────────────────────────────
   if (cause == ESP_SLEEP_WAKEUP_EXT1) {
+    initDisplayHardware(); // Display bei Button-Wakes immer benötigt
     loadFromRtc();
 
     uint64_t pins = esp_sleep_get_ext1_wakeup_status();
